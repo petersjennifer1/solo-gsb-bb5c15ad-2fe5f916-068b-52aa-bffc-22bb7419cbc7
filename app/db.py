@@ -87,6 +87,16 @@ CREATE TABLE IF NOT EXISTS ab_experiments (
     created_at      TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS mapping_batches (
+    id              TEXT PRIMARY KEY,       -- MAP-<UTC timestamp>-<random>
+    filename        TEXT NOT NULL,
+    table_snapshot  TEXT NOT NULL,          -- JSON digest of the frozen address table
+    address_count   INTEGER NOT NULL,
+    rows_json       TEXT NOT NULL,          -- per-row raw text, status, candidates
+    summary_json    TEXT NOT NULL,
+    created_at      TEXT NOT NULL
+);
+
 -- Manual-review claims: a reviewer "checks out" one pending record for a
 -- short lease.  At most one row per match_id is *active* at any moment
 -- (active = released_at IS NULL AND expires_at > now); that invariant is
@@ -521,3 +531,45 @@ def list_ab_experiments(conn: sqlite3.Connection, limit: int = 50,
 
 def count_ab_experiments(conn: sqlite3.Connection) -> int:
     return int(conn.execute("SELECT COUNT(*) FROM ab_experiments").fetchone()[0])
+
+
+# ----------------------------------------------------------- mapping batches --
+
+
+def insert_mapping_batch(conn: sqlite3.Connection, *, batch_id: str, filename: str,
+                         table_snapshot: str, address_count: int,
+                         rows: list[dict[str, Any]], summary: dict[str, Any],
+                         created_at: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO mapping_batches
+            (id, filename, table_snapshot, address_count, rows_json,
+             summary_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            batch_id, filename, table_snapshot, address_count,
+            json.dumps(rows, ensure_ascii=False),
+            json.dumps(summary, ensure_ascii=False),
+            created_at,
+        ),
+    )
+
+
+def get_mapping_batch(conn: sqlite3.Connection, batch_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM mapping_batches WHERE id = ?", (batch_id,)
+    ).fetchone()
+
+
+def list_mapping_batches(conn: sqlite3.Connection, limit: int = 50,
+                         offset: int = 0) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT id, filename, table_snapshot, address_count, summary_json, created_at"
+        " FROM mapping_batches ORDER BY id DESC LIMIT ? OFFSET ?",
+        (limit, offset),
+    ).fetchall()
+
+
+def count_mapping_batches(conn: sqlite3.Connection) -> int:
+    return int(conn.execute("SELECT COUNT(*) FROM mapping_batches").fetchone()[0])

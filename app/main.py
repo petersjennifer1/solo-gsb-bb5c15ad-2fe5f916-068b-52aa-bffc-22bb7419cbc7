@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -19,6 +19,7 @@ from . import (
     experiments,
     import_impact,
     ingest,
+    mapping_batches,
     review_claims,
     review_groups,
     review_replay,
@@ -695,3 +696,76 @@ def get_experiment(experiment_id: str,
     if row is None:
         raise HTTPException(status_code=404, detail="实验不存在")
     return experiments.serialize_experiment(row)
+
+
+# --- external-address mapping batches ---------------------------------------
+
+
+@app.post("/api/mapping-batches")
+async def create_mapping_batch(
+    file: UploadFile = File(...),
+    conn: db.sqlite3.Connection = Depends(get_conn),
+    settings: Settings = Depends(settings_dep),
+) -> dict[str, Any]:
+    """上传含业务编号、原始地址的 CSV（最多 100 行）生成映射批次。
+
+    全部行在**同一标准地址表快照**下按现有匹配规则逐行评分（纯评分：不查询
+    复核共识记忆、不写普通匹配日志）；业务编号相同但原始地址不同的行标为
+    **编号冲突**，不得任选一行（冲突行即使自身评分很高也不会得到目标 ID）。
+    批次（每行原文、匹配状态、候选与冲突原因）整体持久化，可按编号回看。
+    """
+    if not file.filename or not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="请上传 .csv 文件")
+    content = await file.read()
+    try:
+        return mapping_batches.run_batch(conn, content, file.filename, settings)
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"CSV 解析失败: {exc}") from exc
+    except mapping_batches.MappingValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/mapping-batches")
+def list_mapping_batches(limit: int = 50, offset: int = 0,
+                         conn: db.sqlite3.Connection = Depends(get_conn)
+                         ) -> dict[str, Any]:
+    limit = max(1, min(limit, 200))
+    return mapping_batches.list_batches(conn, limit=limit, offset=offset)
+
+
+@app.get("/api/mapping-batches/{batch_id}")
+def get_mapping_batch(batch_id: str,
+                      conn: db.sqlite3.Connection = Depends(get_conn)
+                      ) -> dict[str, Any]:
+    try:
+        return mapping_batches.get_batch(conn, batch_id)
+    except mapping_batches.MappingBatchNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/mapping-batches/{batch_id}/export")
+def export_mapping_batch(batch_id: str,
+                         conn: db.sqlite3.Connection = Depends(get_conn)
+                         ) -> Response:
+    """下载完整映射 CSV：先重新核对当前地址表摘要。
+
+    快照变化则拒绝导出（409）并提示重新建批次；未自动命中或编号冲突的行
+    保留原业务编号、目标 ID 留空并写明原因。
+    """
+    try:
+        filename, csv_text = mapping_batches.export_csv(conn, batch_id)
+    except mapping_batches.MappingBatchNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except mapping_batches.MappingTableChanged as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    headers = {
+        # RFC 5987 encoding keeps the non-ASCII filename intact.
+        "Content-Disposition":
+            f"attachment; filename=mapping_batch.csv; "
+            f"filename*=UTF-8''{filename}",
+    }
+    return Response(
+        content=csv_text,
+        media_type="text/csv; charset=utf-8",
+        headers=headers,
+    )

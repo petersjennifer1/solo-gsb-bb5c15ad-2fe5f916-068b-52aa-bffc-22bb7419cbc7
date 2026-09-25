@@ -17,6 +17,7 @@
 
 <nav class="tabs">
     <button class="tab" data-tab="match">单条 / 批量匹配</button>
+    <button class="tab" data-tab="mapping">外部映射批次</button>
     <button class="tab" data-tab="experiment">规则 A/B 实验</button>
     <button class="tab" data-tab="table">标准地址表 <span id="addr-count" class="count"></span></button>
     <button class="tab" data-tab="review">待确认队列 <span id="review-count" class="count"></span></button>
@@ -40,6 +41,44 @@
             </div>
         </div>
         <div id="results"></div>
+    </section>
+
+    <!-- ==================== external mapping batches ================== -->
+    <section id="tab-mapping" class="panel">
+        <div class="card">
+            <h2>外部地址映射批次</h2>
+            <p class="hint">
+                上传含<b>业务编号</b>与<b>原始地址</b>两列的 CSV（数据行最多 100 行），
+                服务端在<b>同一标准地址表快照</b>下按现有匹配规则逐行评分并保存整个批次：
+                不写普通匹配日志，也不查询复核共识记忆。业务编号相同但地址不同的行标为
+                <b>编号冲突</b>，不会任选一行（目标 ID 一律留空）。
+                回看批次时展示每行原文、匹配状态、候选及冲突原因；下载完整映射 CSV 前会重新核对
+                当前地址表摘要，<b>快照变化则拒绝导出</b>，需重新建批次。
+                未自动命中或编号冲突的行在导出中保留原编号、目标 ID 留空并写明原因。
+            </p>
+            <div class="row wrap">
+                <input type="file" id="mb-file" accept=".csv" class="hidden-file">
+                <label for="mb-file" class="btn ghost-file">选择批次 CSV 文件</label>
+                <button id="btn-mb-demo" class="ghost">填充示例 CSV</button>
+                <button id="btn-mb-refresh-history" class="ghost">刷新批次历史</button>
+                <span id="mb-msg"></span>
+            </div>
+            <p class="hint">
+                业务编号列可识别 <code>business_id</code>、<code>ref</code>、<code>编号</code>、
+                <code>id</code> 等表头；地址列可识别 <code>address</code>、
+                <code>raw_address</code>、<code>地址</code> 等表头（也可用
+                <code>street/city/state/postal_code/country</code> 结构化列拼接）。
+            </p>
+            <div id="mb-errors"></div>
+        </div>
+        <div id="mb-result"></div>
+        <div class="card" id="mb-history-card">
+            <h2>批次历史</h2>
+            <div class="row">
+                <span class="hint">点击编号回看完整批次；快照已过期的批次不能导出，需重新建批次。</span>
+            </div>
+            <div id="mb-history"></div>
+        </div>
     </section>
 
     <!-- ====================== rule A/B experiments ===================== -->

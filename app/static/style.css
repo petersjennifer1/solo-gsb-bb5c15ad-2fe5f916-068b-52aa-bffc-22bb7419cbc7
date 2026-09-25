@@ -510,3 +510,32 @@ th { color: var(--muted); font-weight: 600; }
 .audit-best b { color: var(--primary); }
 .audit-blockers { margin-top: 8px; }
 .audit-blocker-meta { margin: 8px 0 2px; }
+
+/* ============================================ external mapping batch page */
+
+.mb-snapshot { margin: 10px 0; font-size: 13px; }
+.mb-row {
+    border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 14px; margin-top: 10px;
+}
+.mb-row.status-auto_matched { background: #fbfdfc; }
+.mb-row.status-reference_conflict,
+.mb-row.status-invalid { border-color: var(--red); background: #fffafa; }
+.mb-row-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.mb-ref { font-size: 13px; word-break: break-all; }
+.mb-ref b { color: var(--ink); }
+.mb-addr { font-weight: 600; margin: 6px 0; word-break: break-all; }
+.mb-target-line { font-size: 13px; margin: 6px 0; }
+.mb-details { margin-top: 8px; }
+.mb-details > summary {
+    cursor: pointer; font-size: 13px; color: var(--primary);
+}
+.mb-cat {
+    display: inline-block; padding: 3px 12px; border-radius: 999px;
+    font-size: 12px; font-weight: 700; white-space: nowrap;
+}
+.mb-cat.auto_matched { background: var(--green-bg); color: var(--green); }
+.mb-cat.needs_review { background: var(--amber-bg); color: var(--amber); }
+.mb-cat.no_match { background: var(--red-bg); color: var(--red); }
+.mb-cat.reference_conflict { background: var(--red-bg); color: var(--red); }
+.mb-cat.invalid { background: var(--gray-bg); color: var(--muted); }

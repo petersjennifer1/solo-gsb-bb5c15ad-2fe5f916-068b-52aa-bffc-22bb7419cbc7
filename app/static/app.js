@@ -255,6 +255,7 @@ $$(".tab").forEach((btn) => {
         btn.classList.add("active");
         $(`#tab-${btn.dataset.tab}`).classList.add("active");
         if (btn.dataset.tab === "table") loadAddresses();
+        if (btn.dataset.tab === "mapping") loadMappingHistory();
         if (btn.dataset.tab === "review") loadReview();
         if (btn.dataset.tab === "replay") loadReviewReplay();
         if (btn.dataset.tab === "gaps") loadCoverageGaps();
@@ -1818,3 +1819,290 @@ function downloadCompareCsv() {
     a.remove();
     URL.revokeObjectURL(a.href);
 }
+
+// ===================================================== external mapping batches
+
+const MB_STATUS_LABEL = {
+    auto_matched: "自动命中",
+    needs_review: "待确认",
+    no_match: "无匹配",
+    reference_conflict: "编号冲突",
+    invalid: "无效行",
+};
+
+// Filters available above a rendered batch ("all" shows every row).
+const MB_FILTERS = [
+    { key: "all", label: "全部" },
+    { key: "auto_matched", label: "自动命中" },
+    { key: "needs_review", label: "待确认" },
+    { key: "no_match", label: "无匹配" },
+    { key: "reference_conflict", label: "编号冲突" },
+    { key: "invalid", label: "无效行" },
+];
+
+let mbCurrent = null;      // full batch document currently shown
+let mbFilter = "all";      // active row filter for the shown batch
+
+// Demo file: includes an auto hit, a needs-review (wrong house number), a
+// no-match, repeated references (fine) and one reference with two different
+// addresses (the conflict that must never be auto-resolved).
+const MB_DEMO_CSV = [
+    "business_id,address",
+    '"BIZ-001","123 main st., New York, NY 10001"',
+    '"BIZ-002","1010 Lake Dr, Austin TX"',
+    '"BIZ-003","1 Milky Way, Mars Base"',
+    '"BIZ-004","742 Evergreen Tce, Springfield"',
+    '"BIZ-004","742 Evergreen Tce, Springfield"',
+    '"BIZ-005","50 Hillcrest Rd, Dallas"',
+    '"BIZ-005","52 Hillcrest Rd, Dallas"',
+].join("\n");
+
+function mbSnapshotLine(batch) {
+    const snap = batch.table_snapshot || {};
+    const state = batch.snapshot_current
+        ? '<span class="gap-state covered">✓ 快照为最新</span>'
+        : '<span class="gap-state open">⚠ 地址表快照已变化</span>';
+    return `${state} <span class="muted">建批次时 ${snap.count || 0} 条标准地址` +
+        ` · digest ${escapeHtml(String(snap.digest || "").slice(0, 12))}…</span>`;
+}
+
+function renderMappingRow(row) {
+    const match = row.match;
+    const conflictLines = (row.conflict_lines || [])
+        .filter((n) => n !== row.line_no)
+        .map((n) => `第 ${n} 行`).join("、");
+    const conflictBanner = row.status === "reference_conflict"
+        ? `<div class="conflict">⛔ 编号冲突：业务编号 <b>${escapeHtml(row.business_ref)}</b>` +
+          ` 在批次中对应多个不同地址${conflictLines ? `（${escapeHtml(conflictLines)}）` : ""}，` +
+          `不得任选一行，目标 ID 留空。</div>`
+        : "";
+    const invalidBanner = row.status === "invalid"
+        ? `<div class="conflict">⛔ ${escapeHtml(row.reason)}</div>`
+        : "";
+    // Candidates exist for every scored row (including conflict rows); invalid
+    // rows were never scored and have none.
+    const candidateHtml = match
+        ? (match.candidates || []).map((c, i) => renderCandidate(c, i, {
+            targetRibbon: row.target_id === c.address.id
+                ? { id: c.address.id, label: "映射目标" }
+                : null,
+        })).join("")
+        : '<div class="meta muted">该行未参与匹配</div>';
+    const targetLine = row.target_id !== null && row.target_id !== undefined
+        ? `<span class="ok-msg">映射目标：标准地址 #${row.target_id}</span>`
+        : '<span class="muted">目标 ID 留空（导出时同样留空并附原因）</span>';
+    return `
+    <div class="mb-row status-${row.status}">
+        <div class="mb-row-head">
+            <span class="mb-cat ${row.status}">${MB_STATUS_LABEL[row.status] || row.status}</span>
+            <span class="muted">CSV 第 ${row.line_no} 行</span>
+            <span class="mb-ref">业务编号 <b>${escapeHtml(row.business_ref || "（空）")}</b></span>
+        </div>
+        <div class="mb-addr">🔍 ${escapeHtml(row.raw_address || "（空）")}</div>
+        ${conflictBanner}
+        ${invalidBanner}
+        <div class="mb-target-line">${targetLine}</div>
+        ${match ? `<span class="muted">${escapeHtml(match.reason || row.reason || "")}</span>` : ""}
+        <details class="mb-details">
+            <summary>候选明细（${match ? (match.candidates || []).length : 0}）</summary>
+            ${candidateHtml}
+        </details>
+    </div>`;
+}
+
+function renderMappingBatch(batch) {
+    mbCurrent = batch;
+    const s = batch.summary;
+    const rows = mbFilter === "all"
+        ? batch.rows
+        : batch.rows.filter((r) => r.status === mbFilter);
+    const filterBar = MB_FILTERS.map((f) => {
+        const n = f.key === "all" ? s.total : (s[f.key] || 0);
+        return `<button class="tiny cmp-filter${mbFilter === f.key ? " active" : ""}"` +
+            ` data-mb-filter="${f.key}">${f.label} ${n || 0}</button>`;
+    }).join("");
+    const staleWarn = batch.snapshot_current ? "" : `
+        <div class="cmp-warning">
+            ⚠ 当前标准地址表与建批次时的快照不一致，完整映射 CSV 的导出已被拒绝；
+            请重新上传 CSV 创建批次后再下载。以下仍展示建批次时保存的逐行结果。
+        </div>`;
+    $("#mb-result").innerHTML = `
+    <div class="card mb-result-card">
+        <div class="ab-result-head">
+            <h2>映射批次 <span class="ab-eid">${escapeHtml(batch.id)}</span></h2>
+            <span class="muted">${escapeHtml(batch.created_at)} ·
+                文件 ${escapeHtml(batch.filename || "")}</span>
+        </div>
+        <div class="mb-snapshot">${mbSnapshotLine(batch)}</div>
+        <div class="ab-summary">
+            <div class="ab-sum-cell"><b>数据行</b> ${s.total}</div>
+            <div class="ab-sum-cell"><span class="status auto_matched">${s.auto_matched}</span> 自动命中（可导出目标）</div>
+            <div class="ab-sum-cell"><span class="status needs_review">${s.needs_review}</span> 待确认</div>
+            <div class="ab-sum-cell"><span class="status no_match">${s.no_match}</span> 无匹配</div>
+            <div class="ab-sum-cell"><span class="mb-cat reference_conflict">${s.reference_conflict}</span> 编号冲突</div>
+            <div class="ab-sum-cell"><span class="mb-cat invalid">${s.invalid}</span> 无效行</div>
+        </div>
+        ${staleWarn}
+        <div class="cmp-filterbar">
+            ${filterBar}
+            <span class="cmp-filter-spacer"></span>
+            <button id="btn-mb-export" class="tiny ghost"${batch.snapshot_current ? "" : " disabled"}>
+                ⬇ 下载完整映射 CSV
+            </button>
+        </div>
+        <div id="mb-rows">
+            ${rows.map(renderMappingRow).join("") || '<p class="muted">当前筛选下没有数据行。</p>'}
+        </div>
+    </div>`;
+}
+
+async function createMappingBatch(file) {
+    $("#mb-errors").innerHTML = "";
+    $("#mb-result").innerHTML = '<p class="muted">正在同一标准地址表快照下逐行匹配…</p>';
+    const form = new FormData();
+    form.append("file", file);
+    const res = await fetch("/api/mapping-batches", { method: "POST", body: form });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        $("#mb-result").innerHTML = "";
+        $("#mb-errors").innerHTML =
+            `<div class="ab-errors"><div class="ab-errors-head">⛔ ${escapeHtml(data.detail || "批次创建失败")}</div></div>`;
+        throw new Error(data.detail || "批次创建失败");
+    }
+    mbFilter = "all";
+    renderMappingBatch(data);
+    loadMappingHistory();
+}
+
+$("#mb-file").addEventListener("change", async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    $("#mb-msg").innerHTML = "";
+    try {
+        await createMappingBatch(file);
+    } catch (err) {
+        // Error panel is rendered by createMappingBatch; keep the input so the
+        // user can see which file was rejected.
+    } finally {
+        event.target.value = "";
+    }
+});
+
+$("#btn-mb-demo").addEventListener("click", () => {
+    const blob = new Blob([MB_DEMO_CSV], { type: "text/csv;charset=utf-8" });
+    const file = new File([blob], "mapping_demo.csv", { type: "text/csv" });
+    $("#mb-msg").innerHTML = "";
+    createMappingBatch(file).catch(() => {});
+});
+
+$("#btn-mb-refresh-history").addEventListener("click", loadMappingHistory);
+
+// Filter clicks inside a rendered batch result (delegated; the bar is
+// re-rendered together with the batch).
+$("#mb-result").addEventListener("click", (event) => {
+    const filterBtn = event.target.closest("[data-mb-filter]");
+    if (filterBtn) {
+        mbFilter = filterBtn.dataset.mbFilter;
+        if (mbCurrent) renderMappingBatch(mbCurrent);
+        return;
+    }
+    if (event.target.closest("#btn-mb-export")) {
+        if (mbCurrent) downloadMappingCsv(mbCurrent.id);
+    }
+});
+
+async function downloadMappingCsv(batchId) {
+    const res = await fetch(`/api/mapping-batches/${encodeURIComponent(batchId)}/export`);
+    if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 409) {
+            alert(`${data.detail || "地址表快照已变化"}\n请重新创建批次后再导出。`);
+            // Refresh the open document so the stale warning is shown.
+            try {
+                const fresh = await api(`/api/mapping-batches/${encodeURIComponent(batchId)}`);
+                renderMappingBatch(fresh);
+            } catch (err) { /* ignore refresh failure */ }
+        } else if (res.status === 404) {
+            alert(data.detail || "映射批次不存在");
+        } else {
+            alert(data.detail || "导出失败");
+        }
+        return;
+    }
+    const blob = await res.blob();
+    const disposition = res.headers.get("Content-Disposition") || "";
+    const star = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+    const plain = disposition.match(/filename="?([^";]+)"?/i);
+    const filename = star ? decodeURIComponent(star[1])
+        : (plain ? plain[1] : `mapping_${batchId}.csv`);
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+}
+
+// ------------------------------------------------------------------ history
+
+async function loadMappingHistory() {
+    const box = $("#mb-history");
+    if (!box) return;
+    try {
+        const data = await api("/api/mapping-batches?limit=50");
+        if (data.items.length === 0) {
+            box.innerHTML = '<p class="muted">暂无映射批次。</p>';
+            return;
+        }
+        box.innerHTML = `<div class="table-wrap"><table>
+            <thead><tr><th>批次编号</th><th>创建时间</th><th>文件</th>
+            <th>行数</th><th>自动命中</th><th>待确认</th><th>无匹配</th>
+            <th>编号冲突</th><th>无效</th><th>快照</th><th>操作</th></tr></thead>
+            <tbody>${data.items.map((it) => {
+                const s = it.summary;
+                const stale = it.snapshot_current
+                    ? '<span class="gap-state covered">最新</span>'
+                    : '<span class="gap-state open">已变化</span>';
+                return `<tr>
+                    <td><a href="#" class="ab-open mb-open" data-id="${escapeHtml(it.id)}">${escapeHtml(it.id)}</a></td>
+                    <td>${escapeHtml(it.created_at)}</td>
+                    <td>${escapeHtml(it.filename || "")}</td>
+                    <td>${s.total}</td>
+                    <td>${s.auto_matched}</td>
+                    <td>${s.needs_review}</td>
+                    <td>${s.no_match}</td>
+                    <td>${s.reference_conflict || 0}</td>
+                    <td>${s.invalid || 0}</td>
+                    <td>${stale}</td>
+                    <td class="cmp-pick">
+                        <button class="tiny ghost mb-export" data-id="${escapeHtml(it.id)}"
+                            ${it.snapshot_current ? "" : "disabled"}>⬇ 导出</button>
+                    </td>
+                </tr>`;
+            }).join("")}</tbody></table></div>
+            ${data.total > 50 ? `<p class="muted">共 ${data.total} 个批次，仅显示最近 50 个</p>` : ""}`;
+    } catch (err) {
+        box.innerHTML = `<p class="err-msg">${escapeHtml(err.message)}</p>`;
+    }
+}
+
+$("#mb-history").addEventListener("click", async (event) => {
+    const link = event.target.closest(".mb-open");
+    if (link) {
+        event.preventDefault();
+        try {
+            const data = await api(`/api/mapping-batches/${encodeURIComponent(link.dataset.id)}`);
+            mbFilter = "all";
+            renderMappingBatch(data);
+            window.scrollTo({ top: $("#mb-result").offsetTop - 60, behavior: "smooth" });
+        } catch (err) {
+            alert(err.message);
+        }
+        return;
+    }
+    const exportBtn = event.target.closest(".mb-export");
+    if (exportBtn && !exportBtn.disabled) {
+        downloadMappingCsv(exportBtn.dataset.id);
+    }
+});
