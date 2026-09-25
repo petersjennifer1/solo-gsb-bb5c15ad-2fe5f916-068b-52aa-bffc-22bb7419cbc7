@@ -43,7 +43,7 @@ body {
 .badge.ok { background: var(--green-bg); color: var(--green); }
 .badge.bad { background: var(--red-bg); color: var(--red); }
 
-.tabs { display: flex; gap: 4px; padding: 0 24px; background: var(--card); border-bottom: 1px solid var(--line); }
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 24px; background: var(--card); border-bottom: 1px solid var(--line); }
 .tab {
     border: none; background: none; padding: 14px 16px; cursor: pointer;
     font-size: 14px; color: var(--muted); border-bottom: 2px solid transparent;
@@ -172,6 +172,7 @@ button.reject { background: var(--red-bg); color: var(--red); }
 .status.needs_review { background: var(--amber-bg); color: var(--amber); }
 .status.no_match { background: var(--red-bg); color: var(--red); }
 .status.reviewed { background: var(--gray-bg); color: var(--muted); }
+.status.id_conflict { background: var(--purple-bg); color: var(--purple); }
 
 .candidate {
     border: 1px solid var(--line); border-radius: 10px;
@@ -510,3 +511,32 @@ th { color: var(--muted); font-weight: 600; }
 .audit-best b { color: var(--primary); }
 .audit-blockers { margin-top: 8px; }
 .audit-blocker-meta { margin: 8px 0 2px; }
+
+/* ============================================== external mapping batches */
+
+.map-result-card .map-summary {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+    margin: 10px 0;
+}
+.map-chip {
+    font-size: 13px; font-weight: 600; padding: 4px 12px; border-radius: 999px;
+    background: var(--gray-bg); color: var(--ink);
+}
+.map-summary .status { margin-bottom: 0; }
+.map-row {
+    border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 14px; margin-top: 12px;
+}
+.map-row.conflict { border-color: var(--purple); background: #fbf9fe; }
+.map-row-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.map-row-head .status { margin-bottom: 0; }
+.map-line { font-size: 12px; color: var(--muted); }
+.map-biz { font-size: 13px; }
+.map-biz b { color: var(--ink); }
+.map-target { font-size: 13px; margin: 6px 0; word-break: break-all; }
+.map-target b { color: var(--primary); }
+.map-reason {
+    font-size: 13px; color: var(--amber); margin: 6px 0; word-break: break-all;
+}
+.map-row.conflict .map-reason { color: var(--purple); font-weight: 600; }
+.map-details { margin-top: 6px; }

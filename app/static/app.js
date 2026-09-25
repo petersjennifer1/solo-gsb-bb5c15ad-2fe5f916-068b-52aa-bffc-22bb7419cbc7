@@ -259,6 +259,7 @@ $$(".tab").forEach((btn) => {
         if (btn.dataset.tab === "replay") loadReviewReplay();
         if (btn.dataset.tab === "gaps") loadCoverageGaps();
         if (btn.dataset.tab === "audit") loadAddressAudit();
+        if (btn.dataset.tab === "mapping") loadMappingHistory();
         if (btn.dataset.tab === "experiment") {
             renderProfileEditor();
             loadExperimentHistory();
@@ -1818,3 +1819,233 @@ function downloadCompareCsv() {
     a.remove();
     URL.revokeObjectURL(a.href);
 }
+
+// ============================================ external address mapping batches
+
+// Batch rows reuse the same auto/review/no_match labels; id conflicts get
+// their own status chip rendered below.
+const MAPPING_STATUS_LABEL = {
+    auto_matched: "自动命中",
+    needs_review: "待确认",
+    no_match: "无匹配",
+    id_conflict: "编号冲突",
+};
+
+// The batch currently shown in the result panel (kept for export retries).
+let mappingCurrent = null;
+let mappingFile = null;
+
+function renderMappingRow(row) {
+    const status = MAPPING_STATUS_LABEL[row.status] || row.status;
+    const conflictCls = row.status === "id_conflict" ? " conflict" : "";
+    const targetLine = row.target_id !== null && row.target_id !== undefined
+        ? `映射目标：<b>#${row.target_id}</b> ${escapeHtml(row.target_full_text || "")}` +
+          `<span class="muted">（综合 ${pct(row.best_score)}）</span>`
+        : row.best_id !== null && row.best_id !== undefined
+            ? `<span class="muted">首选候选（未自动命中）：#${row.best_id}` +
+              `（${pct(row.best_score)}），目标 ID 留空</span>`
+            : '<span class="muted">无候选，目标 ID 留空</span>';
+    const candidates = (row.candidates || [])
+        .map((c, i) => renderCandidate(c, i, {
+            targetRibbon: row.target_id === c.address.id
+                ? { id: row.target_id, label: "映射目标" }
+                : undefined,
+        }))
+        .join("");
+    return `
+    <div class="map-row${conflictCls}">
+        <div class="map-row-head">
+            <span class="map-line">CSV 第 ${row.line_no} 行</span>
+            <span class="map-biz">业务编号 <b>${escapeHtml(row.biz_no)}</b></span>
+            <span class="status ${row.status}">${status}</span>
+        </div>
+        <div class="query-line">🏠 ${escapeHtml(row.raw_address)}</div>
+        <div class="muted">归一化：${escapeHtml((row.normalized && row.normalized.text) || "（空）")}
+            · 门牌号 <b>${escapeHtml((row.normalized && row.normalized.house) || "无")}</b></div>
+        <div class="map-target">${targetLine}</div>
+        <div class="map-reason">原因：${escapeHtml(row.reason || "")}</div>
+        <details class="map-details">
+            <summary>候选明细（${(row.candidates || []).length}）</summary>
+            ${candidates || '<div class="meta muted">无候选</div>'}
+        </details>
+    </div>`;
+}
+
+function snapshotText(snapshot) {
+    const s = typeof snapshot === "string" ? JSON.parse(snapshot) : snapshot;
+    return `${s.count} 条 · digest ${escapeHtml(String(s.digest).slice(0, 12))}…`;
+}
+
+function renderMappingBatch(batch) {
+    mappingCurrent = batch;
+    const s = batch.summary;
+    const rows = (batch.rows || []).map(renderMappingRow).join("");
+    $("#mapping-result").innerHTML = `
+    <div class="card map-result-card">
+        <div class="ab-result-head">
+            <h2>映射批次 <span class="ab-eid">${escapeHtml(batch.id)}</span></h2>
+            <span class="muted">${escapeHtml(batch.created_at)} · 文件 ${escapeHtml(batch.filename)}
+                · 地址表快照 ${snapshotText(batch.table_snapshot)}</span>
+        </div>
+        <div class="map-summary">
+            <span class="map-chip total">共 ${s.total} 行</span>
+            <span class="status auto_matched">自动命中 ${s.auto_matched}</span>
+            <span class="status needs_review">待确认 ${s.needs_review}</span>
+            <span class="status no_match">无匹配 ${s.no_match}</span>
+            <span class="status id_conflict">编号冲突 ${s.id_conflict}</span>
+        </div>
+        <p class="hint">未自动命中（待确认 / 无匹配）与编号冲突合计 <b>${s.unresolved}</b> 行：
+            导出 CSV 时保留原业务编号、目标 ID 留空并写明原因。</p>
+        <div class="row">
+            <button id="btn-mapping-export" class="primary">⬇ 下载完整映射 CSV</button>
+            <span id="mapping-export-msg" class="hint"></span>
+        </div>
+        ${rows}
+    </div>`;
+}
+
+$("#mapping-file").addEventListener("change", (event) => {
+    mappingFile = event.target.files[0] || null;
+    $("#btn-mapping-upload").disabled = !mappingFile;
+    $("#mapping-msg").textContent = mappingFile ? mappingFile.name : "";
+    $("#mapping-errors").innerHTML = "";
+});
+
+$("#btn-mapping-upload").addEventListener("click", async () => {
+    if (!mappingFile) return;
+    const btn = $("#btn-mapping-upload");
+    btn.disabled = true;
+    $("#mapping-errors").innerHTML = "";
+    $("#mapping-result").innerHTML = '<p class="muted">正在同一地址表快照下逐行匹配…</p>';
+    try {
+        const form = new FormData();
+        form.append("file", mappingFile);
+        const res = await fetch("/api/mapping-batches", { method: "POST", body: form });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            $("#mapping-errors").innerHTML =
+                `<div class="ab-errors"><div class="ab-errors-head">⛔ ${escapeHtml(data.detail || "上传失败")}</div></div>`;
+            $("#mapping-result").innerHTML = "";
+            return;
+        }
+        $("#mapping-msg").innerHTML =
+            `<span class="ok-msg">批次 ${escapeHtml(data.id)} 已生成并保存</span>`;
+        renderMappingBatch(data);
+        loadMappingHistory();
+    } catch (err) {
+        $("#mapping-errors").innerHTML =
+            `<div class="ab-errors"><div class="ab-errors-head">⛔ ${escapeHtml(err.message)}</div></div>`;
+        $("#mapping-result").innerHTML = "";
+    } finally {
+        btn.disabled = false;
+    }
+});
+
+$("#btn-mapping-refresh").addEventListener("click", loadMappingHistory);
+
+async function loadMappingHistory() {
+    const box = $("#mapping-history");
+    if (!box) return;
+    try {
+        const data = await api("/api/mapping-batches?limit=50");
+        if (data.items.length === 0) {
+            box.innerHTML = '<p class="muted">暂无映射批次。</p>';
+            return;
+        }
+        box.innerHTML = `<div class="table-wrap"><table>
+            <thead><tr><th>批次编号</th><th>生成时间</th><th>文件</th><th>行数</th>
+            <th>自动命中</th><th>待确认</th><th>无匹配</th><th>编号冲突</th><th>快照</th><th>操作</th></tr></thead>
+            <tbody>${data.items.map((it) => {
+                const s = it.summary;
+                return `<tr>
+                    <td><a href="#" class="map-open" data-id="${escapeHtml(it.id)}">${escapeHtml(it.id)}</a></td>
+                    <td>${escapeHtml(it.created_at)}</td>
+                    <td>${escapeHtml(it.filename)}</td>
+                    <td>${s.total}</td>
+                    <td>${s.auto_matched}</td>
+                    <td>${s.needs_review}</td>
+                    <td>${s.no_match}</td>
+                    <td>${s.id_conflict ? `<span class="ab-flag">${s.id_conflict}</span>` : 0}</td>
+                    <td><span class="muted">${it.address_count} 条 · ${escapeHtml(String(it.table_snapshot.digest).slice(0, 8))}…</span></td>
+                    <td class="cmp-pick">
+                        <button class="tiny ghost map-open-btn" data-id="${escapeHtml(it.id)}">回看</button>
+                        <button class="tiny confirm map-export-btn" data-id="${escapeHtml(it.id)}">下载映射</button>
+                    </td>
+                </tr>`;
+            }).join("")}</tbody></table></div>
+            ${data.total > 50 ? `<p class="muted">共 ${data.total} 个批次，仅显示最近 50 个</p>` : ""}`;
+    } catch (err) {
+        box.innerHTML = `<p class="err-msg">${escapeHtml(err.message)}</p>`;
+    }
+}
+
+async function openMappingBatch(id) {
+    try {
+        const data = await api(`/api/mapping-batches/${encodeURIComponent(id)}`);
+        renderMappingBatch(data);
+        window.scrollTo({ top: $("#mapping-result").offsetTop - 60, behavior: "smooth" });
+    } catch (err) {
+        alert(err.message);
+    }
+}
+
+async function downloadMappingCsv(id, button) {
+    const res = await fetch(`/api/mapping-batches/${encodeURIComponent(id)}/export`);
+    if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 409) {
+            alert(`${data.detail || "地址表快照已变化"}\n请基于当前地址表重新建立批次后再导出。`);
+        } else {
+            alert(data.detail || `下载失败 (${res.status})`);
+        }
+        return;
+    }
+    const blob = await res.blob();
+    const disposition = res.headers.get("Content-Disposition") || "";
+    const match = /filename="([^"]+)"/.exec(disposition);
+    const filename = match ? match[1] : `mapping_${id}.csv`;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+    if (button) {
+        const old = button.textContent;
+        button.textContent = "✓ 已下载";
+        setTimeout(() => { button.textContent = old; }, 1500);
+    }
+}
+
+$("#mapping-history").addEventListener("click", async (event) => {
+    const openLink = event.target.closest(".map-open");
+    if (openLink) {
+        event.preventDefault();
+        await openMappingBatch(openLink.dataset.id);
+        return;
+    }
+    const openBtn = event.target.closest(".map-open-btn");
+    if (openBtn) {
+        await openMappingBatch(openBtn.dataset.id);
+        return;
+    }
+    const exportBtn = event.target.closest(".map-export-btn");
+    if (exportBtn) {
+        await downloadMappingCsv(exportBtn.dataset.id, exportBtn);
+    }
+});
+
+$("#mapping-result").addEventListener("click", async (event) => {
+    const btn = event.target.closest("#btn-mapping-export");
+    if (!btn || !mappingCurrent) return;
+    const msg = $("#mapping-export-msg");
+    msg.textContent = "正在核对当前地址表快照…";
+    btn.disabled = true;
+    try {
+        await downloadMappingCsv(mappingCurrent.id, btn);
+        msg.textContent = "";
+    } finally {
+        btn.disabled = false;
+    }
+});

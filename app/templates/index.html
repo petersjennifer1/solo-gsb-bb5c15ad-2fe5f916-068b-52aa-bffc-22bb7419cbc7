@@ -17,6 +17,7 @@
 
 <nav class="tabs">
     <button class="tab" data-tab="match">单条 / 批量匹配</button>
+    <button class="tab" data-tab="mapping">外部地址映射批次</button>
     <button class="tab" data-tab="experiment">规则 A/B 实验</button>
     <button class="tab" data-tab="table">标准地址表 <span id="addr-count" class="count"></span></button>
     <button class="tab" data-tab="review">待确认队列 <span id="review-count" class="count"></span></button>
@@ -40,6 +41,44 @@
             </div>
         </div>
         <div id="results"></div>
+    </section>
+
+    <!-- ============== external-address mapping batches =============== -->
+    <section id="tab-mapping" class="panel">
+        <div class="card">
+            <h2>外部地址映射批次</h2>
+            <p class="hint">
+                上传含 <b>业务编号</b> 与 <b>原始地址</b> 的 CSV（最多 100 行），服务端在
+                <b>同一标准地址表快照</b>下按<b>现有匹配规则（默认阈值，纯评分）</b>逐行生成映射并保存批次；
+                批次运行<b>不查询复核共识、不写普通匹配日志</b>。
+                <b>业务编号相同但地址不同</b>的行标记为<b>编号冲突</b>，系统不会任选一行；
+                回看批次可查看每行原文、匹配状态、候选与冲突原因。下载完整映射 CSV 时会
+                <b>重新核对当前地址表摘要</b>：快照变化则拒绝导出，需重新建批次；
+                未自动命中或编号冲突的行保留原编号、目标 ID 留空并写明原因。
+            </p>
+            <div class="row wrap">
+                <input type="file" id="mapping-file" accept=".csv" class="hidden-file">
+                <label for="mapping-file" class="btn ghost-file">选择映射 CSV 文件</label>
+                <button id="btn-mapping-upload" class="primary" disabled>上传并生成批次</button>
+                <button id="btn-mapping-refresh" class="ghost">刷新历史</button>
+                <span id="mapping-msg"></span>
+            </div>
+            <p class="hint">
+                CSV 必须含表头：业务编号列可识别 <code>biz_no</code>、<code>business_id</code>、
+                <code>ref</code>、<code>业务编号</code> 等；地址列可识别 <code>address</code>、
+                <code>raw_address</code>、<code>原始地址</code> 等（无地址列时也可用
+                <code>line1</code>/<code>street</code> 等结构化列拼接）。
+            </p>
+            <div id="mapping-errors"></div>
+        </div>
+        <div id="mapping-result"></div>
+        <div class="card" id="mapping-history-card">
+            <h2>历史批次</h2>
+            <div class="row">
+                <span class="hint">点击批次编号回看每行原文、匹配状态、候选与冲突原因；「下载映射」前服务端会重新核对地址表快照。</span>
+            </div>
+            <div id="mapping-history"></div>
+        </div>
     </section>
 
     <!-- ====================== rule A/B experiments ===================== -->
